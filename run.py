@@ -1,70 +1,64 @@
 """
-run.py  —  entry point. Wires the pieces together and runs one full pipeline.
+run.py  —  entry point. Runs the full pipeline with real LLM-backed nodes.
 
-For now the nodes are STUBS: they do trivial fake work so we can watch the
-whole machine execute end to end. Real LLM-backed nodes replace these later.
+The Planner generates the graph from the requirement. The raw requirement is
+seeded onto the blackboard as the first event, so the RequirementNode reads it
+the same clean way every node reads its inputs.
 """
 
-from core.graph import TaskGraph, Task
-from core.node import Node
+from core.planner import plan
 from core.controller import Controller
+from core.event_log import Event
+from core.node import Node
+from nodes.agents import REAL_NODES
 
 
-# --- Stub nodes: each just writes a small artifact so we can see flow ---
-class StubNode(Node):
-    """A node that produces a fixed artifact. Used to test the machine."""
-    def __init__(self, name, artifact):
+class PassThrough(Node):
+    """Temporary node for tasks without a real implementation yet
+    (context_retrieval, clarify). We build these next."""
+    def __init__(self, name):
         self._name = name
-        self._artifact = artifact
 
-    # 'name' is a class attr on Node; we override via property for stubs.
     @property
     def name(self):
         return self._name
 
     def run(self, state):
-        return self._artifact
+        return {"note": f"{self._name} not yet implemented"}
 
 
-def build_greenfield_graph() -> TaskGraph:
-    """The task graph for building the shortener from scratch."""
-    g = TaskGraph()
-    g.add(Task("requirement"))
-    g.add(Task("plan", depends_on=["requirement"]))
-    g.add(Task("architect", depends_on=["plan"]))
-    g.add(Task("implement", depends_on=["architect"], parallel_group="build"))
-    g.add(Task("test", depends_on=["architect"], parallel_group="build"))
-    g.add(Task("verify", depends_on=["implement", "test"]))
-    g.add(Task("document", depends_on=["verify"]))
-    g.add(Task("release", depends_on=["document"]))
-    return g
+def run_pipeline(requirement: str, run_id: str):
+    graph, plan_artifact = plan(requirement)
 
+    nodes = {}
+    for task in graph.all():
+        if task.name in REAL_NODES:
+            nodes[task.name] = REAL_NODES[task.name]()
+        else:
+            nodes[task.name] = PassThrough(task.name)
 
-def build_nodes() -> dict:
-    """One stub node per task, each writing a placeholder artifact."""
-    return {
-        "requirement": StubNode("requirement", {"spec": "shorten URLs + redirect + click count"}),
-        "plan":        StubNode("plan", {"tasks": ["api", "redirect", "analytics"]}),
-        "architect":   StubNode("architect", {"design": "FastAPI + in-memory map"}),
-        "implement":   StubNode("implement", {"code": "app.py written"}),
-        "test":        StubNode("test", {"tests": "test_app.py written"}),
-        "verify":      StubNode("verify", {"result": "all tests pass"}),
-        "document":    StubNode("document", {"docs": "README updated"}),
-        "release":     StubNode("release", {"release": "change record filed"}),
-    }
+    controller = Controller(graph, nodes, run_id)
+    # Seed the raw requirement as the first event on the blackboard.
+    controller.log.append(Event(run_id, "input", "artifact_written",
+                                {"raw": requirement}))
+    log = controller.run()
+    return log, graph, plan_artifact
 
 
 if __name__ == "__main__":
-    graph = build_greenfield_graph()
-    nodes = build_nodes()
-    controller = Controller(graph, nodes, run_id="run-greenfield-001")
+    requirement = "Build a URL shortener with redirect and click counting"
+    run_id = "run-greenfield-real"
 
-    log = controller.run()
+    log, graph, plan_artifact = run_pipeline(requirement, run_id)
 
-    print("=== FULL RUN — event log ===")
+    print("=== PLAN ARTIFACT ===")
+    print(f"  classified as: {plan_artifact['classification']}")
+    print(f"  tasks: {[t['name'] for t in plan_artifact['tasks']]}")
+
+    print("\n=== RUN EVENTS ===")
     for e in log.all():
-        print(f"  [{e.stage:12}] {e.kind:18} {e.payload}")
+        print(f"  [{e.stage:14}] {e.kind}")
 
-    print("\n=== FINAL TASK STATUSES ===")
-    for task in graph.all():
-        print(f"  {task.name:12} -> {task.status}")
+    print("\n=== FINAL STATUSES ===")
+    for t in graph.all():
+        print(f"  {t.name:16} -> {t.status}")
