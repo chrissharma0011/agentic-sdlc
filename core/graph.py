@@ -1,14 +1,9 @@
 """
 graph.py  —  the task DAG (the dependency graph the assignment mandates).
 
-A DAG = Directed Acyclic Graph: tasks with dependencies, no cycles.
-This file does NOT run any tasks. It only holds the structure and answers
-two questions the controller will ask:
-    1. which tasks are READY to run right now? (all their deps are done)
-    2. are we DONE? (every task finished)
-
-Key point: this graph is DATA. The Planner will build one of these from a
-requirement, and the Replanner can add tasks to it mid-run.
+Tasks now carry an `acceptance` criterion: the Planner defines what "done"
+means for each task, and the node's exit gate reads it from here. That is the
+spec-as-code idea — the plan defines the contract, the gate enforces it.
 """
 
 from dataclasses import dataclass, field
@@ -27,6 +22,8 @@ class Task:
     depends_on: list[str] = field(default_factory=list)
     status: str = PENDING
     parallel_group: str | None = None
+    acceptance: str = ""          # what "done" means for this task (spec-as-code)
+    rationale: str = ""           # why the Planner included this task (lineage)
 
 
 class TaskGraph:
@@ -65,26 +62,3 @@ class TaskGraph:
 
     def has_failure(self) -> bool:
         return any(t.status == FAILED for t in self._tasks.values())
-
-
-if __name__ == "__main__":
-    g = TaskGraph()
-    g.add(Task("requirement"))
-    g.add(Task("plan", depends_on=["requirement"]))
-    g.add(Task("architect", depends_on=["plan"]))
-    g.add(Task("implement", depends_on=["architect"], parallel_group="build"))
-    g.add(Task("test", depends_on=["architect"], parallel_group="build"))
-    g.add(Task("verify", depends_on=["implement", "test"]))
-    g.add(Task("document", depends_on=["verify"]))
-    g.add(Task("release", depends_on=["document"]))
-
-    print("Ready at the start (only 'requirement' has no deps):")
-    print("  ", [t.name for t in g.ready_tasks()])
-
-    for name in ["requirement", "plan", "architect"]:
-        g.get(name).status = DONE
-
-    print("Ready after architect is done (parallel pair should both appear):")
-    print("  ", [t.name for t in g.ready_tasks()])
-
-    print("Is the graph complete?", g.is_complete())
