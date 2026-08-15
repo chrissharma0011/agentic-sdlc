@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -19,3 +20,10 @@ def call_llm(prompt, system="You are a precise software engineer."):
         temperature=0.2,
     )
     return response.choices[0].message.content
+
+
+def strip_code_fences(text):
+    text = text.strip()
+    text = re.sub(r"^```[a-zA-Z]*\n", "", text)
+    text = re.sub(r"\n```$", "", text)
+    return text.strip()
