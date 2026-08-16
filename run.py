@@ -1,13 +1,13 @@
 """
 run.py  —  entry point. Builds the graph via the Planner, wires the right nodes
-(including scenario-specific human gates), and runs the pipeline.
+(human gates + brownfield patching), and runs the pipeline.
 """
 
 from core.planner import plan, BROWNFIELD_QUESTIONS, AMBIGUOUS_QUESTIONS
 from core.controller import Controller
 from core.event_log import Event
 from core.node import Node
-from nodes.agents import REAL_NODES
+from nodes.agents import REAL_NODES, PatchImplementNode
 from nodes.human_gates import HumanClarifyNode, HumanApprovalNode
 
 
@@ -22,16 +22,13 @@ class PassThrough(Node):
 
 
 def build_human_nodes(classification):
-    """Create the clarify/approval nodes with scenario-appropriate config."""
     nodes = {}
     if classification == "brownfield":
         nodes["clarify"] = HumanClarifyNode("clarify", BROWNFIELD_QUESTIONS)
-        # approve based on the impact analysis from context_retrieval
         nodes["approval"] = HumanApprovalNode("approval", "context_retrieval",
                                               "approve change to existing code")
     elif classification == "ambiguous":
         nodes["clarify"] = HumanClarifyNode("clarify", AMBIGUOUS_QUESTIONS)
-        # approve based on the clarified answers
         nodes["approval"] = HumanApprovalNode("approval", "clarify",
                                               "approve the resolved spec")
     return nodes
@@ -47,6 +44,9 @@ def run_pipeline(requirement: str, run_id: str):
     for task in graph.all():
         if task.name in human_nodes:
             nodes[task.name] = human_nodes[task.name]
+        elif task.name == "implement" and classification == "brownfield":
+            # Brownfield PATCHES the existing file instead of regenerating.
+            nodes[task.name] = PatchImplementNode()
         elif task.name in REAL_NODES:
             nodes[task.name] = REAL_NODES[task.name]()
         else:

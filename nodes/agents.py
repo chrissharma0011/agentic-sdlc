@@ -319,3 +319,38 @@ REAL_NODES = {
     "context_retrieval": ContextRetrievalNode,
     "clarify": ClarifyNode,
 }
+
+
+class PatchImplementNode(Node):
+    """Brownfield implement: PATCH the existing app.py surgically, not regenerate."""
+    name = "implement"
+
+    def entry_gate(self, state):
+        if "architect" not in state["artifacts"]:
+            return False, "no design to implement"
+        return True, ""
+
+    def run(self, state):
+        import os
+        from nodes.patcher import patch_file
+
+        path = "shortener/app.py"
+        existing = ""
+        if os.path.exists(path):
+            with open(path) as f:
+                existing = f.read()
+
+        change = state["artifacts"].get("requirement", {}).get("raw", "")
+        impact = state["artifacts"].get("context_retrieval", {}).get("impacted", "")
+
+        new_code, diff = patch_file(existing, change, impact)
+        return {"code": new_code, "diff": diff, "patched": True}
+
+    def exit_gate(self, state, output):
+        code = output.get("code", "")
+        if "def " not in code and "@app" not in code:
+            return False, "patched output does not look like real code"
+        # A patch that changed nothing is suspicious.
+        if not output.get("diff", "").strip():
+            return False, "patch produced no changes"
+        return True, ""
