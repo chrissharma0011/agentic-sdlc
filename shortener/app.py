@@ -1,54 +1,40 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, HttpUrl
-from typing import Dict
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 import random
 import string
 
 app = FastAPI()
 
-class URLMapping:
-    def __init__(self):
-        self.url_map: Dict[str, Dict] = {}
+class ShortenRequest(BaseModel):
+    long_url: str
 
-    def shorten_url(self, long_url: str) -> str:
-        short_url = self.generate_short_url()
-        self.url_map[short_url] = {"long_url": long_url, "click_count": 0}
-        return short_url
+class ShortenResponse(BaseModel):
+    short_code: str
 
-    def generate_short_url(self) -> str:
-        characters = string.ascii_letters + string.digits
-        short_url = ''.join(random.choices(characters, k=6))
-        while short_url in self.url_map:
-            short_url = ''.join(random.choices(characters, k=6))
-        return short_url
+storage = {}
+clicks = {}
 
-    def get_long_url(self, short_url: str) -> str:
-        if short_url in self.url_map:
-            self.url_map[short_url]["click_count"] += 1
-            return self.url_map[short_url]["long_url"]
-        raise HTTPException(status_code=404, detail="Short URL not found")
+def generate_short_code(length=6):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-    def get_click_count(self, short_url: str) -> int:
-        if short_url in self.url_map:
-            return self.url_map[short_url]["click_count"]
-        raise HTTPException(status_code=404, detail="Short URL not found")
+@app.post("/shorten", response_model=ShortenResponse)
+async def shorten_url(request: ShortenRequest):
+    short_code = generate_short_code()
+    storage[short_code] = request.long_url
+    clicks[short_code] = 0
+    return ShortenResponse(short_code=short_code)
 
-url_mapping = URLMapping()
+@app.get("/{short_code}", response_class=RedirectResponse, status_code=307)
+async def redirect_to_long_url(short_code: str):
+    long_url = storage.get(short_code)
+    if long_url is None:
+        raise HTTPException(status_code=404, detail="Short code not found")
+    clicks[short_code] += 1
+    return RedirectResponse(url=long_url)
 
-class URLRequest(BaseModel):
-    long_url: HttpUrl
-
-@app.post("/shorten")
-def shorten_url(request: URLRequest):
-    short_url = url_mapping.shorten_url(request.long_url)
-    return {"short_url": short_url}
-
-@app.get("/{short_url}")
-def redirect_to_long_url(short_url: str):
-    long_url = url_mapping.get_long_url(short_url)
-    return {"long_url": long_url}
-
-@app.get("/stats/{short_url}")
-def get_click_count(short_url: str):
-    click_count = url_mapping.get_click_count(short_url)
-    return {"click_count": click_count}
+@app.get("/stats/{short_code}")
+async def get_stats(short_code: str):
+    if short_code not in clicks:
+        raise HTTPException(status_code=404, detail="Short code not found")
+    return {"clicks": clicks[short_code]}

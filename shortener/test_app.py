@@ -1,38 +1,46 @@
 import pytest
 from fastapi.testclient import TestClient
-from app import app, URLMapping
+from app import app
 
-client = TestClient(app)
-url_mapping = URLMapping()
+client = TestClient(app, follow_redirects=False)
 
 def test_shorten_url():
-    response = client.post("/shorten", json={"long_url": "https://example.com"})
+    response = client.post("/shorten", json={"long_url": "http://example.com"})
     assert response.status_code == 200
-    assert "short_url" in response.json()
+    assert "short_code" in response.json()
 
-def test_redirect_to_long_url():
-    # First, shorten a URL to get a short URL
-    response = client.post("/shorten", json={"long_url": "https://example.com"})
-    short_url = response.json()["short_url"]
+def test_redirect_url():
+    # First, shorten the URL to get the short_code
+    response = client.post("/shorten", json={"long_url": "http://example.com"})
+    short_code = response.json()["short_code"]
 
-    # Now, redirect using the short URL
-    response = client.get(f"/{short_url}")
+    # Now, test the redirect
+    response = client.get(f"/{short_code}")
+    assert response.status_code == 307
+    assert response.headers["location"] == "http://example.com"
+
+def test_stats_url():
+    # First, shorten the URL to get the short_code
+    response = client.post("/shorten", json={"long_url": "http://example.com"})
+    short_code = response.json()["short_code"]
+
+    # Check initial clicks
+    response = client.get(f"/stats/{short_code}")
     assert response.status_code == 200
-    assert response.url == "https://example.com"
+    assert response.json()["clicks"] == 0
 
-def test_click_count():
-    response = client.post("/shorten", json={"long_url": "https://example.com"})
-    short_url = response.json()["short_url"]
+    # Simulate a click
+    client.get(f"/{short_code}")
 
-    # Redirect to increment click count
-    client.get(f"/{short_url}")
-    client.get(f"/{short_url}")
+    # Check clicks after one access
+    response = client.get(f"/stats/{short_code}")
+    assert response.status_code == 200
+    assert response.json()["clicks"] == 1
 
-    # Check click count
-    click_count = url_mapping.get_click_count(short_url)
-    assert click_count == 2
-
-def test_invalid_short_url():
-    response = client.get("/invalid_short_url")
+def test_not_found_redirect():
+    response = client.get("/nonexistent")
     assert response.status_code == 404
-    assert response.json() == {"detail": "Short URL not found"}
+
+def test_not_found_stats():
+    response = client.get("/stats/nonexistent")
+    assert response.status_code == 404

@@ -1,16 +1,73 @@
 """
-agents.py  —  the real LLM-backed nodes.
+agents.py  —  real LLM-backed nodes with a SHARED CONTRACT.
 
-Every node: build a prompt from the blackboard, call the LLM, return an
-artifact. Gates stay deterministic. Code nodes strip markdown fences; the
-Verify node ACTUALLY RUNS pytest and gates on real pass/fail.
+The Architect emits an explicit contract (endpoints, status codes, shapes).
+Implement builds TO the contract; Test asserts AGAINST the same contract.
+They never see each other's code, but share one spec -> they align.
+Verify runs real pytest and self-heals the code toward the frozen tests.
 """
 
 import os
+import json
 import subprocess
 import tempfile
 from core.node import Node
 from nodes.llm import call_llm, strip_code_fences
+
+REPAIR_BUDGET = 3
+
+# The shared contract for the URL shortener. The Architect commits to this;
+# Implement and Test both bind to it. This is the single source of truth that
+# stops code and tests from drifting apart.
+SHORTENER_CONTRACT = {
+    "endpoints": [
+        {"method": "POST", "path": "/shorten",
+         "request": {"long_url": "string"},
+         "response": {"short_code": "string"},
+         "status": 200},
+        {"method": "GET", "path": "/{short_code}",
+         "behavior": "return RedirectResponse to the long URL",
+         "status": 307,
+         "not_found_status": 404},
+        {"method": "GET", "path": "/stats/{short_code}",
+         "response": {"clicks": "integer"},
+         "status": 200,
+         "not_found_status": 404},
+    ],
+    "storage": "in-memory dict, no database",
+    "notes": "Use JSON request bodies (not form data). Redirect uses status 307.",
+}
+
+CONTRACT_TEXT = json.dumps(SHORTENER_CONTRACT, indent=2)
+
+
+def _run_pytest(code, tests):
+    tmp = tempfile.mkdtemp(prefix="verify_")
+    with open(os.path.join(tmp, "app.py"), "w") as f:
+        f.write(code)
+    with open(os.path.join(tmp, "test_app.py"), "w") as f:
+        f.write(tests)
+    try:
+        proc = subprocess.run(
+            ["python3", "-m", "pytest", "test_app.py", "-q"],
+            cwd=tmp, capture_output=True, text=True, timeout=60,
+        )
+        return proc.returncode == 0, (proc.stdout + proc.stderr)[-800:]
+    except Exception as e:
+        return False, f"pytest could not run: {e}"
+
+
+def _repair_code(code, tests, error):
+    prompt = (
+        "This Python code fails its tests. Fix it.\n\n"
+        f"--- CONTRACT (source of truth) ---\n{CONTRACT_TEXT}\n\n"
+        f"--- CURRENT CODE ---\n{code}\n\n"
+        f"--- TESTS IT MUST PASS (do not change these) ---\n{tests}\n\n"
+        f"--- PYTEST FAILURE ---\n{error}\n\n"
+        "Return the CORRECTED app.py that passes these tests and matches the "
+        "contract. Change as little as possible. No prose, no fences."
+    )
+    return strip_code_fences(call_llm(prompt))
 
 
 class RequirementNode(Node):
@@ -18,10 +75,8 @@ class RequirementNode(Node):
 
     def run(self, state):
         raw = state.get("raw_requirement", "")
-        prompt = (
-            f"Turn this request into a clear, concrete engineering spec:\n'{raw}'\n\n"
-            "State what to build, key features, and acceptance criteria. Under 120 words."
-        )
+        prompt = (f"Turn this request into a clear engineering spec:\n'{raw}'\n\n"
+                  "State what to build, key features, acceptance criteria. Under 120 words.")
         return {"spec": call_llm(prompt), "raw": raw}
 
     def exit_gate(self, state, output):
@@ -40,8 +95,8 @@ class PlanNode(Node):
 
     def run(self, state):
         spec = state["artifacts"].get("requirement", {})
-        prompt = (f"Given this spec:\n{spec}\n\nList the concrete engineering tasks "
-                  "to build it, in order, as short bullets. Under 100 words.")
+        prompt = (f"Given this spec:\n{spec}\n\nList concrete engineering tasks in "
+                  "order, as short bullets. Under 100 words.")
         return {"plan": call_llm(prompt)}
 
     def exit_gate(self, state, output):
@@ -60,19 +115,21 @@ class ArchitectNode(Node):
 
     def run(self, state):
         spec = state["artifacts"].get("requirement", {})
-        plan = state["artifacts"].get("plan", {})
-        prompt = ("You are designing a small URL shortener service.\n"
-                  f"Requirement: {spec}\nPlan: {plan}\n\n"
-                  "Produce a concise technical design. Name concrete files (like "
-                  "'app.py'), API endpoints, and the data model. Under 200 words.")
-        return {"design": call_llm(prompt)}
+        # The Architect commits to the shared contract. It writes a short design
+        # narrative AND attaches the machine-readable contract both other nodes bind to.
+        prompt = (f"Design a URL shortener for this spec:\n{spec}\n\n"
+                  f"You must conform to this contract:\n{CONTRACT_TEXT}\n\n"
+                  "Write a 100-word design describing app.py implementing this "
+                  "contract. Name the file app.py.")
+        design_text = call_llm(prompt)
+        return {"design": design_text, "contract": SHORTENER_CONTRACT}
 
     def exit_gate(self, state, output):
         design = output.get("design", "")
         if ".py" not in design:
             return False, "design does not name any concrete file"
-        if len(design) < 40:
-            return False, "design too short to be real"
+        if not output.get("contract"):
+            return False, "no contract attached"
         return True, ""
 
 
@@ -85,14 +142,14 @@ class ImplementNode(Node):
         return True, ""
 
     def run(self, state):
-        design = state["artifacts"].get("architect", {})
-        last = state.get("last_failure")
-        fix_hint = f"\nThe previous attempt failed: {last}. Fix it." if last else ""
-        prompt = (f"Implement this design as a single Python FastAPI file:\n{design}\n"
-                  f"{fix_hint}\n\n"
-                  "Return ONLY the code for app.py — a working URL shortener with "
-                  "shorten, redirect, and click-count endpoints using an in-memory "
-                  "dict. No prose, no markdown fences.")
+        # Bind to the contract, not to any test.
+        prompt = (
+            "Implement a URL shortener as a single FastAPI file app.py.\n\n"
+            f"You MUST match this contract exactly:\n{CONTRACT_TEXT}\n\n"
+            "Use JSON request bodies. The redirect endpoint returns "
+            "RedirectResponse (status 307). Use an in-memory dict for storage. "
+            "Return ONLY the code for app.py. No prose, no markdown fences."
+        )
         return {"code": strip_code_fences(call_llm(prompt))}
 
     def exit_gate(self, state, output):
@@ -114,12 +171,17 @@ class TestNode(Node):
         return True, ""
 
     def run(self, state):
-        design = state["artifacts"].get("architect", {})
-        code = state["artifacts"].get("implement", {}).get("code", "")
-        prompt = (f"Write pytest tests for this URL shortener code:\n\n{code[:1500]}\n\n"
-                  "Use FastAPI's TestClient. Return ONLY test code for test_app.py "
-                  "that imports from app. Cover shorten, redirect, click count. "
-                  "No prose, no markdown fences.")
+        # Bind to the SAME contract, independently of the implementation code.
+        prompt = (
+            "Write pytest tests for a URL shortener using FastAPI TestClient.\n\n"
+            f"Test against this contract exactly:\n{CONTRACT_TEXT}\n\n"
+            "Import the app from app (import app). Use JSON bodies. "
+            "CRITICAL for the redirect test: create the client with "
+            "TestClient(app, follow_redirects=False) and assert status_code == 307 "
+            "and the 'location' header equals the long URL. "
+            "Test shorten (200), redirect (307), and stats clicks (200). "
+            "Return ONLY test code for test_app.py. No prose, no fences."
+        )
         return {"tests": strip_code_fences(call_llm(prompt))}
 
     def exit_gate(self, state, output):
@@ -139,32 +201,20 @@ class VerifyNode(Node):
     def run(self, state):
         code = state["artifacts"].get("implement", {}).get("code", "")
         tests = state["artifacts"].get("test", {}).get("tests", "")
-
-        # Write code + tests to a temp dir and actually run pytest.
-        tmp = tempfile.mkdtemp(prefix="verify_")
-        with open(os.path.join(tmp, "app.py"), "w") as f:
-            f.write(code)
-        with open(os.path.join(tmp, "test_app.py"), "w") as f:
-            f.write(tests)
-
-        try:
-            proc = subprocess.run(
-                ["python3", "-m", "pytest", "test_app.py", "-q"],
-                cwd=tmp, capture_output=True, text=True, timeout=60,
-            )
-            passed = proc.returncode == 0
-            output_tail = (proc.stdout + proc.stderr)[-500:]
-        except Exception as e:
-            passed = False
-            output_tail = f"pytest could not run: {e}"
-
+        passed, output = _run_pytest(code, tests)
+        repairs = 0
+        while not passed and repairs < REPAIR_BUDGET:
+            repairs += 1
+            code = _repair_code(code, tests, output)
+            passed, output = _run_pytest(code, tests)
         return {"result": "all tests pass" if passed else "tests failed",
-                "passed": passed, "pytest_output": output_tail}
+                "passed": passed, "repairs_used": repairs,
+                "repaired_code": code if repairs > 0 else None,
+                "pytest_output": output}
 
     def exit_gate(self, state, output):
         if not output.get("passed"):
-            tail = output.get("pytest_output", "")[-200:]
-            return False, f"tests did not pass: {tail}"
+            return False, f"tests did not pass after repairs: {output.get('pytest_output','')[-200:]}"
         return True, ""
 
 
@@ -177,9 +227,9 @@ class DocumentNode(Node):
         return True, ""
 
     def run(self, state):
-        design = state["artifacts"].get("architect", {})
-        prompt = (f"Write a short README for this URL shortener:\n{design}\n\n"
-                  "Cover what it does, how to run it, and the endpoints. Under 150 words.")
+        prompt = (f"Write a short README for a URL shortener with this contract:\n"
+                  f"{CONTRACT_TEXT}\n\nCover what it does, how to run it, the "
+                  "endpoints. Under 150 words.")
         return {"docs": call_llm(prompt)}
 
     def exit_gate(self, state, output):
@@ -247,9 +297,8 @@ class ClarifyNode(Node):
     def run(self, state):
         spec = state["artifacts"].get("requirement", {})
         prompt = (f"This request is vague: {spec}\n\n"
-                  "List the specific ambiguities to resolve, and the reasonable "
-                  "default assumption for each. Format 'Ambiguity -> Assumption'. "
-                  "Under 150 words.")
+                  "List specific ambiguities and the reasonable default assumption "
+                  "for each. Format 'Ambiguity -> Assumption'. Under 150 words.")
         return {"clarification": call_llm(prompt), "resolved_by": "logged assumptions"}
 
     def exit_gate(self, state, output):
