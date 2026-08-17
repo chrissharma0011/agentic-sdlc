@@ -116,14 +116,51 @@ class ArchitectNode(Node):
     def run(self, state):
         spec = state["artifacts"].get("requirement", {})
         # The Architect DERIVES the contract from the spec (agent-derived source
-        # of truth), then writes a design against it. A schema gate validates it.
+        # of truth). If this is a CHANGE to existing code that introduces new
+        # endpoints, the contract is EXTENDED so implement, patch, and test all
+        # bind to the same evolved contract (prevents behavior drift on new paths).
         contract = self._derive_contract(spec)
+        change_text = "%s %s" % (spec.get("raw", ""), spec.get("spec", ""))
+        existing = "context_retrieval" in state["artifacts"]  # brownfield/patch path
+        if existing:
+            contract = self._extend_contract_for_change(contract, change_text)
         prompt = (f"Design a URL shortener for this spec:\n{spec}\n\n"
                   f"It must implement this contract:\n{json.dumps(contract, indent=2)}\n\n"
                   "Write a 100-word design describing app.py implementing this "
                   "contract. Name the file app.py.")
         design_text = call_llm(prompt)
         return {"design": design_text, "contract": contract}
+
+    def _extend_contract_for_change(self, contract, change_text):
+        """If a brownfield change introduces new endpoint(s), add them to the
+        contract so implement/patch/test all agree on the new behavior. If the
+        change touches only existing endpoints, the contract is returned
+        unchanged. Failures leave the contract untouched (safe)."""
+        try:
+            existing_paths = [e.get("path") for e in contract.get("endpoints", [])]
+            prompt = (
+                "You maintain an API contract. Here is the current contract:\n"
+                f"{json.dumps(contract, indent=2)}\n\n"
+                f"A change was requested:\n{change_text}\n\n"
+                "If the change adds a NEW endpoint not already in the contract, "
+                "return ONLY a JSON array of the new endpoint object(s) to ADD, "
+                'each as {"method","path","response","status"}. Pin exact '
+                "response field names and status codes. If the change only affects "
+                "EXISTING endpoints (or adds a field to one), return an empty array []. "
+                "Return ONLY the JSON array, no prose, no fences."
+            )
+            raw = strip_code_fences(call_llm(prompt))
+            additions = json.loads(raw)
+            if not isinstance(additions, list) or not additions:
+                return contract  # nothing new; existing-endpoint change
+            merged = dict(contract)
+            merged["endpoints"] = list(contract.get("endpoints", []))
+            for ep in additions:
+                if isinstance(ep, dict) and ep.get("path") not in existing_paths:
+                    merged["endpoints"].append(ep)
+            return merged
+        except Exception:
+            return contract  # any failure -> leave contract unchanged (safe)
 
     def _derive_contract(self, spec):
         """Ask the LLM to emit the API contract as JSON from the spec, pinning the
@@ -184,6 +221,10 @@ class ImplementNode(Node):
             "Use JSON request bodies. POST /shorten returns {\"short_code\": ...}. "
             "GET /stats/{short_code} returns {\"clicks\": ...}. The redirect endpoint "
             "returns RedirectResponse (status 307). Use these EXACT field names. "
+            "IMPORTANT error paths from the contract: for an UNKNOWN short_code, "
+            "BOTH GET /{short_code} and GET /stats/{short_code} MUST raise "
+            "HTTPException(status_code=404). Implement exactly the endpoints in the "
+            "contract and no others. "
             "Use an in-memory dict for storage. "
             "Return ONLY the code for app.py. No prose, no markdown fences."
         )
@@ -218,7 +259,13 @@ class TestNode(Node):
             "CRITICAL for the redirect test: create the client with "
             "TestClient(app, follow_redirects=False) and assert status_code == 307 "
             "and the 'location' header equals the long URL. "
-            "Test shorten (200), redirect (307), and stats clicks (200). "
+            "Test ONLY the behaviors declared in the contract above and NOTHING "
+            "else. Do NOT invent endpoints, fields, or status codes that are not "
+            "in the contract (no health/readiness/503/500 tests, no auth tests). "
+            "Where the contract gives a not_found_status of 404, add a test that an "
+            "UNKNOWN short_code returns 404 for that endpoint. "
+            "Cover: shorten (200), redirect (307), stats clicks (200), and the "
+            "404 not-found paths the contract declares. "
             "Return ONLY test code for test_app.py. No prose, no fences."
         )
         return {"tests": strip_code_fences(call_llm(prompt))}
@@ -385,7 +432,10 @@ class PatchImplementNode(Node):
         impact = state["artifacts"].get("context_retrieval", {}).get("impacted", "")
 
         feedback = state["artifacts"].get("approval", {}).get("feedback", "")
-        new_code, diff = patch_file(existing, change, impact, feedback)
+        # Pass the (possibly extended) contract so the patch honors declared
+        # behavior for any new endpoints — keeps patch and tests aligned.
+        contract = state["artifacts"].get("architect", {}).get("contract", {})
+        new_code, diff = patch_file(existing, change, impact, feedback, contract)
         return {"code": new_code, "diff": diff, "patched": True}
 
     def exit_gate(self, state, output):
