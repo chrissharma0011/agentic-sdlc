@@ -173,15 +173,16 @@ demos/                Standalone demos
 
 ---
 
-## Limitations & trade-offs
+## Future scope
 
-These are deliberate choices scoped for a prototype, not oversights. Each has a clear extension path.
+The system is designed so that each of these extends the existing architecture rather than replacing it — the event-sourced spine, the gate model, and the deterministic control shell all carry forward unchanged.
 
-- **Durable event log with crash recovery.** Each run's events are flushed to `runs/<run_id>/events.jsonl` as they happen; re-invoking a crashed run with the same `run_id` replays the log and resumes exactly where it stopped, skipping completed stages. (Set no path for in-memory-only mode.)
-- **Keyword-based intent classifier.** Requirements are classified by keyword matching, which is brittle at the edges. An LLM classifier would generalize better; the keyword version is transparent and deterministic for the demo.
-- **Naive secret scan.** The no-secrets guardrail is a substring check, not full static analysis.
-- **Single-project scope.** Changes target the current code on disk (like a git working tree), not a project selected by id. Multi-project support would add project-scoped storage.
-- **LLM non-determinism.** Generated code varies run to run. The system manages this with real test verification, bounded retries, dynamic re-planning, and human escalation rather than assuming any single generation is correct.
+- **Database-backed durable state.** Runs already persist to an append-only event log (`runs/<run_id>/events.jsonl`) with full crash-recovery resume. The next step is backing that log with a database (e.g. Postgres), giving concurrent-run isolation, queryable run history, and durable state for long-running or distributed execution. Because state is already a fold over the log, this is a storage swap, not a redesign.
+- **LLM-based intent classification.** The planner currently classifies requirements deterministically; upgrading to an LLM classifier generalizes intent detection to arbitrary phrasings while keeping the same three-way routing (greenfield / brownfield / ambiguous) and the same downstream graphs.
+- **Hardened policy guardrails.** The guardrail layer is enforced at gates and is designed to be extended: richer policies (dependency-license checks, static-analysis passes, style/security linting) plug in as additional gate checks without touching node logic.
+- **Expanded secret and PII scanning.** The no-secrets guardrail can be upgraded from pattern matching to a full detection layer (entropy analysis, named detectors, format-preserving redaction), enforced at the same gate boundary so nothing bypasses it.
+- **Multi-project workspaces.** Changes currently target the working tree; project-scoped storage keyed above the run id would let the orchestrator manage multiple codebases concurrently, each with its own event log and history.
+- **CI integration.** The engine and fixture test suites are ready to wire into a CI workflow (run on every push), turning the verification layer into a continuous gate.
 
 ---
 
