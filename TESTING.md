@@ -51,6 +51,14 @@ If the tests fail, the node **self-heals**: it repairs the code toward the froze
 
 ---
 
+## Verifying crash recovery (offline)
+
+Crash recovery can be checked without an API key by killing a run mid-way and
+re-invoking it: events are flushed to `runs/<run_id>/events.jsonl` as they
+happen, so on restart the log replays and the run resumes from where it stopped,
+re-running only the interrupted node. The engine test suite covers the resume
+logic (completed stages are marked done and skipped).
+
 ## Limitations & honest notes
 
 - **Engine tests use synthetic nodes, not live LLMs.** This is deliberate: it isolates the *control logic* from LLM non-determinism so the tests are deterministic and fast. It does mean the engine tests do not exercise real prompt behavior — that is covered by running the scenarios end-to-end.
