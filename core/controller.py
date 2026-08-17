@@ -75,7 +75,7 @@ class Controller:
                       rationale="dynamic re-plan: injected after verify failure")
         self.graph.add(repair)
         # ...AND register a node to execute it (re-plan must supply its own node).
-        self.nodes["repair"] = _RepairNode()
+        self.nodes.setdefault("repair", _RepairNode())  # respect a pre-registered repair node (e.g. tests/offline)
 
         # Re-route: verify now depends on repair; reset verify + downstream to pending.
         verify = self.graph.get("verify")
