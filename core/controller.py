@@ -69,11 +69,13 @@ class Controller:
 
         self._replans_used += 1
 
-        # Insert the repair node into the graph (real mutation).
+        # Insert the repair node into the graph (real mutation)...
         repair = Task("repair", depends_on=["architect"],
                       acceptance="repaired code addresses the failure",
                       rationale="dynamic re-plan: injected after verify failure")
         self.graph.add(repair)
+        # ...AND register a node to execute it (re-plan must supply its own node).
+        self.nodes["repair"] = _RepairNode()
 
         # Re-route: verify now depends on repair; reset verify + downstream to pending.
         verify = self.graph.get("verify")
@@ -182,3 +184,34 @@ class Controller:
 
         self.log.append(Event(self.run_id, "controller", "run_finished", {}))
         return self.log
+
+
+class _RepairNode(Node):
+    """Injected by dynamic re-planning after a verify failure. Regenerates the
+    implementation, feeding in the failure reason so the next verify can pass.
+    Writes to the 'implement' stage so the re-run verify picks it up."""
+    name = "repair"
+
+    def entry_gate(self, state):
+        if "architect" not in state["artifacts"]:
+            return False, "no design to repair against"
+        return True, ""
+
+    def run(self, state):
+        from nodes.llm import call_llm, strip_code_fences
+        design = state["artifacts"].get("architect", {})
+        contract = design.get("contract", {})
+        failure = state.get("last_failure", "") or "previous verification failed"
+        prompt = (
+            "The previous implementation failed verification. Regenerate a "
+            "corrected FastAPI app.py.\n\n"
+            f"Contract:\n{contract}\n\n"
+            f"Failure reason:\n{failure}\n\n"
+            "Return ONLY the corrected code for app.py. No prose, no fences."
+        )
+        return {"code": strip_code_fences(call_llm(prompt))}
+
+    def exit_gate(self, state, output):
+        if "def " not in output.get("code", "") and "@app" not in output.get("code", ""):
+            return False, "repair produced no real code"
+        return True, ""
