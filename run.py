@@ -3,6 +3,7 @@ run.py  —  entry point. Builds the graph via the Planner, wires the right node
 (human gates + patching for change-paths), and runs the pipeline.
 """
 
+import os
 from core.planner import plan, BROWNFIELD_QUESTIONS, AMBIGUOUS_QUESTIONS
 from core.controller import Controller
 from core.event_log import Event
@@ -41,7 +42,7 @@ def _is_patch_path(classification):
     return classification.startswith("brownfield") or "patch" in classification
 
 
-def run_pipeline(requirement: str, run_id: str):
+def run_pipeline(requirement: str, run_id: str, log_path: str | None = None):
     graph, plan_artifact = plan(requirement)
     classification = plan_artifact["classification"]
 
@@ -58,8 +59,16 @@ def run_pipeline(requirement: str, run_id: str):
         else:
             nodes[task.name] = PassThrough(task.name)
 
-    controller = Controller(graph, nodes, run_id)
-    controller.log.append(Event(run_id, "input", "artifact_written", {"raw": requirement}))
+    # Durable log: default to runs/<run_id>/events.jsonl so a crashed run can
+    # be resumed by re-invoking with the same run_id (and thus the same path).
+    if log_path is None:
+        os.makedirs(os.path.join("runs", run_id), exist_ok=True)
+        log_path = os.path.join("runs", run_id, "events.jsonl")
+
+    controller = Controller(graph, nodes, run_id, log_path=log_path)
+    # Seed the requirement only on a FRESH run (avoid duplicating it on resume).
+    if not any(e.stage == "input" for e in controller.log.all()):
+        controller.log.append(Event(run_id, "input", "artifact_written", {"raw": requirement}))
     log = controller.run()
     return log, graph, plan_artifact
 
