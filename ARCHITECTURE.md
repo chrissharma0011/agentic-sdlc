@@ -170,12 +170,13 @@ In the context of preventing code/test drift, facing a choice between a hardcode
 
 ---
 
-## 12. Limitations & trade-offs
+## 12. Future scope
 
-Deliberate scope lines for a prototype, each with an extension path:
+Each of these extends the current architecture rather than replacing it — the event-sourced spine, the gate model, and the deterministic control shell all carry forward unchanged.
 
-- **Event log durability (implemented).** Events are flushed to `runs/<run_id>/events.jsonl` as they occur, and a crashed run resumes by replaying the log (skipping completed stages). Remaining edge: a crash *inside* a node — after its LLM call but before the event is written — causes that single node to re-run on resume (an idempotent retry, not data loss). Full exactly-once execution would need intra-node checkpointing, which is out of scope.
-- **Keyword intent classifier.** Requirements are classified by keyword matching, which is brittle at the edges (e.g. "display…" reads as a build, not a change, unless phrased with a change verb). Extension: an LLM classifier; the keyword version is transparent and deterministic for the demo.
-- **Naive secret scan.** The no-secrets guardrail is a substring check, not static analysis.
-- **Single-project scope.** Changes target the current code on disk (like a git working tree), not a project selected by id. Extension: project-scoped storage keyed above the run id.
-- **LLM non-determinism.** Generated code varies between runs. This is managed — not eliminated — by real test verification, bounded retries, dynamic re-planning, and human escalation. A run that fails and recovers (or escalates honestly) is the system working as designed, not a defect.
+- **Database-backed durable state.** Runs persist to an append-only event log with crash-recovery resume (events flush to `runs/<run_id>/events.jsonl` as they occur; a restarted run replays the log and skips completed stages). Backing that log with a database (e.g. Postgres) adds concurrent-run isolation, queryable history, and durable state for distributed execution. Because state is a fold over the log, this is a storage swap, not a redesign.
+- **LLM-based intent classification.** The planner classifies deterministically today; an LLM classifier generalizes intent detection to arbitrary phrasings while preserving the same three-way routing and downstream graphs.
+- **Hardened policy guardrails.** Guardrails are enforced at gates and designed to extend: dependency-license checks, static-analysis passes, and security linting plug in as additional gate checks without touching node logic.
+- **Expanded secret and PII scanning.** The no-secrets guardrail extends from pattern matching to a full detection layer (entropy analysis, named detectors, format-preserving redaction), enforced at the same gate boundary.
+- **Multi-project workspaces.** Project-scoped storage keyed above the run id would let the orchestrator manage multiple codebases concurrently, each with its own event log and history.
+- **CI integration.** The engine and fixture test suites are ready to wire into a CI workflow, turning the verification layer into a continuous gate on every push.
