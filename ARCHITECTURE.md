@@ -87,6 +87,8 @@ This single primitive yields several requirements at once, rather than as separa
 
 Deriving state from an immutable log is the event-sourcing pattern; getting audit, rollback, and metrics from one decision is the payoff.
 
+**Durability / crash recovery.** The log can be given a file path, in which case every event is flushed to `runs/<run_id>/events.jsonl` the moment it is appended, and an existing file is replayed on startup. Because state is a fold over the log, this yields crash recovery directly: if the process dies mid-run, re-invoking with the same run id replays the events, marks already-passed stages done, and resumes exactly where it stopped — no work is repeated. This is the concrete payoff of the event-sourcing decision: durable recovery is a property of the design, not a separate subsystem.
+
 ---
 
 ## 6. Dynamic task graphs and re-planning
@@ -158,7 +160,7 @@ In the context of a graded assignment whose core requirement is demonstrating or
 In the context of coordinating multiple LLM agents across an SDLC, facing the common linear-chain/message-passing pattern, we decided to use a blackboard (shared event log), to achieve uniform recovery and no information loss between steps, accepting that a shared store requires disciplined state derivation.
 
 **ADR-3 — Event sourcing as the state model.**
-In the context of needing audit trails, rollback, and metrics, facing the option of mutable state plus a separate logger, we decided to make state a projection of an append-only event log, to achieve all three from one primitive with full traceability, accepting that current state must be recomputed by folding the log.
+In the context of needing audit trails, rollback, and metrics, facing the option of mutable state plus a separate logger, we decided to make state a projection of an append-only event log, to achieve all three from one primitive with full traceability (and, by persisting the log, crash recovery), accepting that current state must be recomputed by folding the log.
 
 **ADR-4 — Deterministic control shell, LLM fenced in nodes.**
 In the context of wanting reproducible, governable control flow, facing the option of an LLM-driven controller, we decided to keep the controller deterministic and confine LLM calls to node bodies, to achieve predictable orchestration and testable recovery logic, accepting that routing cannot itself be "reasoned about" by a model at runtime.
@@ -172,7 +174,7 @@ In the context of preventing code/test drift, facing a choice between a hardcode
 
 Deliberate scope lines for a prototype, each with an extension path:
 
-- **In-memory event log.** The log lives in memory for a run; a crash mid-run loses orchestration state. Extension: persist events to durable storage — the event-sourced design makes this a drop-in, and is exactly where a durable executor would slot in.
+- **Event log durability (implemented).** Events are flushed to `runs/<run_id>/events.jsonl` as they occur, and a crashed run resumes by replaying the log (skipping completed stages). Remaining edge: a crash *inside* a node — after its LLM call but before the event is written — causes that single node to re-run on resume (an idempotent retry, not data loss). Full exactly-once execution would need intra-node checkpointing, which is out of scope.
 - **Keyword intent classifier.** Requirements are classified by keyword matching, which is brittle at the edges (e.g. "display…" reads as a build, not a change, unless phrased with a change verb). Extension: an LLM classifier; the keyword version is transparent and deterministic for the demo.
 - **Naive secret scan.** The no-secrets guardrail is a substring check, not static analysis.
 - **Single-project scope.** Changes target the current code on disk (like a git working tree), not a project selected by id. Extension: project-scoped storage keyed above the run id.
