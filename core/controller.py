@@ -26,12 +26,21 @@ REPLAN_BUDGET = 1   # how many times we may inject a repair task and loop back
 
 
 class Controller:
-    def __init__(self, graph: TaskGraph, nodes: dict[str, Node], run_id: str):
+    def __init__(self, graph: TaskGraph, nodes: dict[str, Node], run_id: str,
+                 log_path: str | None = None):
         self.graph = graph
         self.nodes = nodes
         self.run_id = run_id
-        self.log = EventLog()
+        # A log_path makes the event log durable: events are flushed to disk as
+        # they happen and replayed on construction, so a crashed run can resume.
+        self.log = EventLog(log_path)
         self._replans_used = 0
+        # RESUME: if the (replayed) log shows stages already passed, mark those
+        # tasks DONE so the controller skips them and continues where it stopped.
+        done = self.log.completed_stages()
+        for t in self.graph.all():
+            if t.name in done:
+                t.status = DONE
 
     def _run_one(self, task) -> bool:
         """Run one task with adaptive retries. True if it passed."""
