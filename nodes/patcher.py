@@ -9,7 +9,7 @@ import difflib
 from nodes.llm import call_llm, strip_code_fences
 
 
-def patch_file(existing_code, change_request, impact="", feedback=""):
+def patch_file(existing_code, change_request, impact="", feedback="", contract=None):
     """Edit existing_code for change_request. Returns (new_code, diff_text).
     `feedback` is human guidance from the revise gate — honored strictly."""
     feedback_line = ""
@@ -18,12 +18,22 @@ def patch_file(existing_code, change_request, impact="", feedback=""):
             f"\n--- HUMAN REVISION INSTRUCTION (follow this strictly) ---\n{feedback}\n"
         )
 
+    import json as _json
+    contract_line = ""
+    if contract:
+        contract_line = (
+            "\n--- API CONTRACT (honor these exact paths, status codes, and "
+            "response fields for any new or changed endpoint) ---\n"
+            + _json.dumps(contract, indent=2) + "\n"
+        )
+
     prompt = (
         "You are making a TARGETED change to an existing Python file. "
         "Make ONLY the requested change. Preserve all existing behavior, "
         "endpoints, and structure exactly. Do not rewrite unrelated code.\n\n"
         f"--- CHANGE REQUESTED ---\n{change_request}\n\n"
         f"--- IMPACT ANALYSIS ---\n{impact}\n"
+        f"{contract_line}"
         f"{feedback_line}\n"
         f"--- CURRENT FILE (app.py) ---\n{existing_code}\n\n"
         "If the file is a FastAPI app, any catch-all route like "
