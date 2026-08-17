@@ -1,21 +1,42 @@
-"""Synthetic test of the new controller: parallel exec, replan, approval-resume."""
-import sys, builtins, os
-# Add the project root to the path so this runs from anywhere.
+"""
+Engine tests for the orchestrator control logic.
+
+These run WITHOUT an API key: they use synthetic in-memory nodes and stub the
+human input, so they are deterministic and fast. They exercise the three
+behaviors that are hardest to eyeball and most likely to regress:
+  1. concurrent fork-join execution
+  2. dynamic re-planning (graph mutation) on verify failure
+  3. the closed human-approval loop (approve -> resume, not halt)
+
+Run:  python3 -m pytest tests/test_engine.py -v
+   or: python3 tests/test_engine.py   (falls back to running all tests)
+"""
+
+import sys
+import os
+import builtins
+
+# Make the project root importable however this file is invoked.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.graph import TaskGraph, Task, DONE
 from core.node import Node, GateError
 from core.controller import Controller
-from core.event_log import build_state
 
-# --- Test 1: parallel group runs concurrently, whole graph completes ---
+
 class OK(Node):
-    def __init__(self, n): self._n = n
+    """A node that always succeeds, writing a fixed artifact."""
+    def __init__(self, n, art=None):
+        self._n = n
+        self._art = art or {"ok": True}
     @property
-    def name(self): return self._n
-    def run(self, state): return {"ok": True}
+    def name(self):
+        return self._n
+    def run(self, state):
+        return self._art
 
-def make_graph():
+
+def _base_graph():
     g = TaskGraph()
     g.add(Task("architect"))
     g.add(Task("implement", depends_on=["architect"], parallel_group="build"))
@@ -23,69 +44,99 @@ def make_graph():
     g.add(Task("verify", depends_on=["implement", "test"]))
     return g
 
-g = make_graph()
-nodes = {n: OK(n) for n in ["architect","implement","test","verify"]}
-ctrl = Controller(g, nodes, "t1")
-log = ctrl.run()
-statuses = {t.name: t.status for t in g.all()}
-assert all(s == DONE for s in statuses.values()), f"FAIL: {statuses}"
-kinds = [e.kind for e in log.all()]
-assert "parallel_start" in kinds and "parallel_join" in kinds, "FAIL: no parallel events"
-print("TEST 1 PASS: parallel group ran concurrently, all tasks done")
 
-# --- Test 2: verify fails -> replan injects repair -> loop back ---
-class FailOnce(Node):
-    """verify fails until a 'repair' artifact exists."""
-    def __init__(self, n): self._n = n
-    @property
-    def name(self): return self._n
-    def run(self, state):
-        if self._n == "verify" and "repair" not in state["artifacts"]:
-            raise GateError("exit", "tests failed")
-        return {"ok": True}
+def test_parallel_fork_join():
+    """implement and test share a parallel_group -> run concurrently, sync at verify."""
+    g = _base_graph()
+    nodes = {n: OK(n) for n in ["architect", "implement", "test", "verify"]}
+    ctrl = Controller(g, nodes, "t-parallel")
+    log = ctrl.run()
+    kinds = [e.kind for e in log.all()]
+    assert all(t.status == DONE for t in g.all())
+    assert "parallel_start" in kinds and "parallel_join" in kinds
 
-g2 = make_graph()
-# add architect dep chain for repair to attach to (repair depends_on architect)
-nodes2 = {n: FailOnce(n) for n in ["architect","implement","test","verify"]}
-nodes2["repair"] = OK("repair")  # repair node available when injected
-ctrl2 = Controller(g2, nodes2, "t2")
-log2 = ctrl2.run()
-kinds2 = [e.kind for e in log2.all()]
-assert "replan_injected" in kinds2, f"FAIL: no replan. kinds={set(kinds2)}"
-assert g2.get("verify").status == DONE, f"FAIL: verify not done: {g2.get('verify').status}"
-assert "repair" in [t.name for t in g2.all()], "FAIL: repair task not in graph"
-print("TEST 2 PASS: verify failure injected a repair task and looped back to green")
 
-# --- Test 3: approval loop is CLOSED (approve -> resume, not halt) ---
-attempts = {"count": 0}
-class FailTwiceThenHuman(Node):
-    def __init__(self, n): self._n = n
-    @property
-    def name(self): return self._n
-    def run(self, state):
-        if self._n == "document":
-            attempts["count"] += 1
-            # fail forever via retries so it escalates (document can't replan)
-            if attempts["count"] <= 3:
-                raise GateError("exit", "doc failed")
-        return {"ok": True}
+def test_dynamic_replanning():
+    """verify fails until a repair artifact exists -> controller injects repair,
+    reroutes, and loops back to green. Uses an OFFLINE repair stub."""
+    class VerifyUntilRepaired(Node):
+        name = "verify"
+        def run(self, state):
+            if "repair" not in state["artifacts"]:
+                return {"passed": False}
+            return {"passed": True}
+        def exit_gate(self, state, output):
+            if not output.get("passed"):
+                return False, "tests failed"
+            return True, ""
 
-g3 = TaskGraph()
-g3.add(Task("architect"))
-g3.add(Task("document", depends_on=["architect"]))
-nodes3 = {"architect": OK("architect"), "document": FailTwiceThenHuman("document")}
-# simulate human approving (typing anything but 'stop'), then it should resume & pass
-inputs = iter(["approve"])
-builtins.input = lambda *a, **k: next(inputs)
-# stub the LLM diagnosis to avoid API call
-import core.replanner as rp
-rp._llm_diagnosis = lambda *a, **k: "DIAGNOSIS: test\nFIXES:\n1. retry"
-ctrl3 = Controller(g3, nodes3, "t3")
-log3 = ctrl3.run()
-kinds3 = [e.kind for e in log3.all()]
-assert "human_approved_fix" in kinds3, "FAIL: no approval event"
-assert "run_finished" in kinds3, f"FAIL: did not resume/finish after approval. kinds={kinds3}"
-assert g3.get("document").status == DONE, "FAIL: document not done after approval"
-print("TEST 3 PASS: approval loop CLOSED - human approve resumed the run to completion")
+    g = _base_graph()
+    nodes = {
+        "architect": OK("architect", {"design": "d", "contract": {"endpoints": [1]}}),
+        "implement": OK("implement", {"code": "c"}),
+        "test": OK("test", {"tests": "t"}),
+        "verify": VerifyUntilRepaired(),
+        "repair": OK("repair", {"code": "repaired"}),   # offline stub; controller respects it
+    }
+    ctrl = Controller(g, nodes, "t-replan")
+    log = ctrl.run()
+    kinds = [e.kind for e in log.all()]
+    assert "replan_injected" in kinds
+    assert "repair" in [t.name for t in g.all()]
+    assert g.get("verify").status == DONE
 
-print("\nALL CONTROLLER TESTS PASSED")
+
+def test_approval_loop_closes(monkeypatch=None):
+    """After retries are exhausted, human 'approve' RESUMES the run to completion
+    (not halt). Stubs input() and the LLM diagnosis so it runs offline."""
+    attempts = {"n": 0}
+
+    class FailThenPass(Node):
+        name = "document"
+        def run(self, state):
+            attempts["n"] += 1
+            if attempts["n"] <= 3:
+                return {"bad": True}
+            return {"ok": True}
+        def exit_gate(self, state, output):
+            if output.get("bad"):
+                return False, "doc failed"
+            return True, ""
+
+    g = TaskGraph()
+    g.add(Task("architect"))
+    g.add(Task("document", depends_on=["architect"]))
+    nodes = {"architect": OK("architect"), "document": FailThenPass()}
+
+    # stub human input (approve) and the LLM diagnosis
+    saved_input = builtins.input
+    builtins.input = lambda *a, **k: "approve"
+    import core.replanner as rp
+    saved_diag = rp._llm_diagnosis
+    rp._llm_diagnosis = lambda *a, **k: "DIAGNOSIS: test\nFIXES:\n1. retry"
+    try:
+        ctrl = Controller(g, nodes, "t-approve")
+        log = ctrl.run()
+    finally:
+        builtins.input = saved_input
+        rp._llm_diagnosis = saved_diag
+
+    kinds = [e.kind for e in log.all()]
+    assert "human_approved_fix" in kinds
+    assert "run_finished" in kinds
+    assert g.get("document").status == DONE
+
+
+if __name__ == "__main__":
+    # Allow running directly; run all tests and report, without halting on first fail.
+    failures = 0
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print(f"PASS: {name}")
+            except Exception as e:
+                failures += 1
+                print(f"FAIL: {name} -> {e}")
+    print("\n" + ("ALL ENGINE TESTS PASSED" if failures == 0 else f"{failures} TEST(S) FAILED"))
+    sys.exit(1 if failures else 0)
