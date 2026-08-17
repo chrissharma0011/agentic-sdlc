@@ -177,7 +177,7 @@ demos/                Standalone demos
 
 These are deliberate choices scoped for a prototype, not oversights. Each has a clear extension path.
 
-- **In-memory event log.** The audit trail lives in memory for a run; a crash mid-run loses orchestration state. Production would persist events to durable storage (the event-sourced design makes this a drop-in).
+- **Durable event log with crash recovery.** Each run's events are flushed to `runs/<run_id>/events.jsonl` as they happen; re-invoking a crashed run with the same `run_id` replays the log and resumes exactly where it stopped, skipping completed stages. (Set no path for in-memory-only mode.)
 - **Keyword-based intent classifier.** Requirements are classified by keyword matching, which is brittle at the edges. An LLM classifier would generalize better; the keyword version is transparent and deterministic for the demo.
 - **Naive secret scan.** The no-secrets guardrail is a substring check, not full static analysis.
 - **Single-project scope.** Changes target the current code on disk (like a git working tree), not a project selected by id. Multi-project support would add project-scoped storage.
