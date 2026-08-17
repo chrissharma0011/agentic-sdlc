@@ -1,6 +1,6 @@
 """
 run.py  —  entry point. Builds the graph via the Planner, wires the right nodes
-(human gates + brownfield patching), and runs the pipeline.
+(human gates + patching for change-paths), and runs the pipeline.
 """
 
 from core.planner import plan, BROWNFIELD_QUESTIONS, AMBIGUOUS_QUESTIONS
@@ -23,15 +23,22 @@ class PassThrough(Node):
 
 def build_human_nodes(classification):
     nodes = {}
-    if classification == "brownfield":
+    if classification.startswith("brownfield"):
         nodes["clarify"] = HumanClarifyNode("clarify", BROWNFIELD_QUESTIONS)
         nodes["approval"] = HumanApprovalNode("approval", "context_retrieval",
                                               "approve change to existing code")
-    elif classification == "ambiguous":
+    elif classification.startswith("ambiguous"):
         nodes["clarify"] = HumanClarifyNode("clarify", AMBIGUOUS_QUESTIONS)
-        nodes["approval"] = HumanApprovalNode("approval", "clarify",
+        # approve based on context if patching, else on the clarified answers
+        summary_key = "context_retrieval" if "patch" in classification else "clarify"
+        nodes["approval"] = HumanApprovalNode("approval", summary_key,
                                               "approve the resolved spec")
     return nodes
+
+
+def _is_patch_path(classification):
+    # These change existing code -> use the patch node instead of regenerating.
+    return classification.startswith("brownfield") or "patch" in classification
 
 
 def run_pipeline(requirement: str, run_id: str):
@@ -44,8 +51,7 @@ def run_pipeline(requirement: str, run_id: str):
     for task in graph.all():
         if task.name in human_nodes:
             nodes[task.name] = human_nodes[task.name]
-        elif task.name == "implement" and classification == "brownfield":
-            # Brownfield PATCHES the existing file instead of regenerating.
+        elif task.name == "implement" and _is_patch_path(classification):
             nodes[task.name] = PatchImplementNode()
         elif task.name in REAL_NODES:
             nodes[task.name] = REAL_NODES[task.name]()
@@ -59,8 +65,8 @@ def run_pipeline(requirement: str, run_id: str):
 
 
 if __name__ == "__main__":
-    requirement = "Build a URL shortener with redirect and click counting"
-    log, graph, plan_artifact = run_pipeline(requirement, "run-greenfield")
+    log, graph, plan_artifact = run_pipeline(
+        "Build a URL shortener with redirect and click counting", "run-greenfield")
     print(f"Classified as: {plan_artifact['classification']}")
     for t in graph.all():
         print(f"  {t.name:16} -> {t.status}")

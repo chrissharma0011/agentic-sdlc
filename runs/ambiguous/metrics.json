@@ -1,0 +1,10 @@
+{
+  "success_rate": 1.0,
+  "node_passes": 10,
+  "node_failures": 0,
+  "retries": 0,
+  "rollbacks": 0,
+  "escalations": 0,
+  "mttr_seconds": "n/a (no recovery)",
+  "latency_seconds": 68.0399
+}

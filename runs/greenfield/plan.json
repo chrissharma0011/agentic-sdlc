@@ -1,0 +1,70 @@
+{
+  "requirement": "Build a URL shortener with redirect and click counting",
+  "classification": "greenfield",
+  "rationale": "classified as 'greenfield' from the requirement wording",
+  "tasks": [
+    {
+      "name": "requirement",
+      "depends_on": [],
+      "acceptance": "spec is concrete and unambiguous",
+      "rationale": "normalize the request"
+    },
+    {
+      "name": "plan",
+      "depends_on": [
+        "requirement"
+      ],
+      "acceptance": "every task has an owner and criteria",
+      "rationale": "decompose into a task graph"
+    },
+    {
+      "name": "architect",
+      "depends_on": [
+        "plan"
+      ],
+      "acceptance": "design names concrete files and APIs",
+      "rationale": "design the system from scratch"
+    },
+    {
+      "name": "implement",
+      "depends_on": [
+        "architect"
+      ],
+      "acceptance": "code builds and contains no secrets",
+      "rationale": "write the code"
+    },
+    {
+      "name": "test",
+      "depends_on": [
+        "architect"
+      ],
+      "acceptance": "tests exist for each endpoint",
+      "rationale": "write tests in parallel with code"
+    },
+    {
+      "name": "verify",
+      "depends_on": [
+        "implement",
+        "test"
+      ],
+      "acceptance": "all tests pass",
+      "rationale": "run tests and policy checks"
+    },
+    {
+      "name": "document",
+      "depends_on": [
+        "verify"
+      ],
+      "acceptance": "README covers setup and usage",
+      "rationale": "document the result"
+    },
+    {
+      "name": "release",
+      "depends_on": [
+        "document"
+      ],
+      "acceptance": "tests passed and change record filed",
+      "rationale": "human-gated release"
+    }
+  ]
+}

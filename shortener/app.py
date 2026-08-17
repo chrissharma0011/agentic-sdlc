@@ -1,12 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
 from pydantic import BaseModel
 import random
 import string
+from datetime import datetime
 
 app = FastAPI()
 storage = {}
 click_counts = {}
+click_data = {}
 
 
 class ShortenRequest(BaseModel):
@@ -42,6 +44,7 @@ async def shorten_url(request: ShortenRequest):
     code = generate_short_code()
     storage[code] = request.long_url
     click_counts[code] = 0
+    click_data[code] = []  # Initialize click data for the short code
     return {"short_code": code}
 
 
@@ -49,13 +52,20 @@ async def shorten_url(request: ShortenRequest):
 async def get_stats(short_code: str):
     if short_code not in click_counts:
         raise HTTPException(status_code=404, detail="not found")
-    return {"clicks": click_counts[short_code]}
+    return {"clicks": click_counts[short_code], "click_data": click_data[short_code]}
 
 
 @app.get("/{short_code}", response_class=RedirectResponse, status_code=307)
-async def redirect_to_long_url(short_code: str):
+async def redirect_to_long_url(short_code: str, request: Request):
     long_url = storage.get(short_code)
     if long_url is None:
         raise HTTPException(status_code=404, detail="not found")
     click_counts[short_code] += 1
+    click_info = {
+        "timestamp": datetime.utcnow(),
+        "ip_address": request.client.host,
+        "user_agent": request.headers.get('user-agent'),
+        "referrer": request.headers.get('referer')
+    }
+    click_data[short_code].append(click_info)  # Log click data
     return RedirectResponse(url=long_url)

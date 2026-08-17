@@ -343,7 +343,8 @@ class PatchImplementNode(Node):
         change = state["artifacts"].get("requirement", {}).get("raw", "")
         impact = state["artifacts"].get("context_retrieval", {}).get("impacted", "")
 
-        new_code, diff = patch_file(existing, change, impact)
+        feedback = state["artifacts"].get("approval", {}).get("feedback", "")
+        new_code, diff = patch_file(existing, change, impact, feedback)
         return {"code": new_code, "diff": diff, "patched": True}
 
     def exit_gate(self, state, output):

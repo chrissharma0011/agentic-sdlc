@@ -1,13 +1,10 @@
 """
 human_gates.py  —  interactive human-in-the-loop nodes.
 
-Two governance moments, both block-and-wait for typed input:
-  - HumanClarifyNode  (Type B): the system ASKS the human questions, the human
-    answers, and the answers go onto the blackboard for downstream nodes.
-  - HumanApprovalNode (Type A): the system SHOWS the human the impact/plan and
-    requires explicit approval before a high-impact action (change/release).
-
-Both record their events, so the human's input is part of the audit trail.
+HumanClarifyNode : asks questions, records answers.
+HumanApprovalNode: three-way gate — approve / reject / revise-with-feedback.
+  On 'revise', the human's guidance is stored on the blackboard so the
+  downstream implement/patch step honors it.
 """
 
 from core.node import Node
@@ -15,11 +12,9 @@ from core.event_log import Event
 
 
 class HumanClarifyNode(Node):
-    """Asks scenario-specific questions and records the human's answers."""
-
     def __init__(self, name, questions):
         self._name = name
-        self._questions = questions   # list of question strings
+        self._questions = questions
 
     @property
     def name(self):
@@ -43,11 +38,9 @@ class HumanClarifyNode(Node):
 
 
 class HumanApprovalNode(Node):
-    """Shows the human what will happen and requires explicit approval."""
-
     def __init__(self, name, summary_key, prompt_label):
         self._name = name
-        self._summary_key = summary_key      # which upstream artifact to show
+        self._summary_key = summary_key
         self._label = prompt_label
 
     @property
@@ -55,15 +48,24 @@ class HumanApprovalNode(Node):
         return self._name
 
     def run(self, state):
-        # Show the relevant upstream artifact (e.g. the impact analysis).
         summary = state["artifacts"].get(self._summary_key, {})
         print("\n" + "=" * 60)
         print(f"  HUMAN APPROVAL REQUIRED — {self._label}")
         print("=" * 60)
         print(f"  Review:\n  {summary}")
         print("=" * 60)
-        choice = input("  Approve to proceed? (yes/no): ").strip().lower()
-        return {"approved": choice in ("yes", "y"), "choice": choice}
+        print("  Options: 'yes' (approve) / 'no' (reject) / 'revise' (approve with changes)")
+        choice = input("  Your decision: ").strip().lower()
+
+        feedback = ""
+        if choice == "revise":
+            feedback = input("  What should change? ").strip()
+
+        return {
+            "approved": choice in ("yes", "y", "revise"),
+            "choice": choice,
+            "feedback": feedback,
+        }
 
     def exit_gate(self, state, output):
         if not output.get("approved"):
