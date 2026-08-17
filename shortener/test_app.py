@@ -2,29 +2,37 @@ import pytest
 from fastapi.testclient import TestClient
 from app import app
 
-client = TestClient(app)
+client = TestClient(app, follow_redirects=False)
 
-def test_shorten():
-    response = client.post("/shorten", json={"long_url": "https://example.com"})
+def test_shorten_url():
+    response = client.post("/shorten", json={"long_url": "http://example.com"})
     assert response.status_code == 200
     assert "short_code" in response.json()
 
-def test_redirect():
-    # First, create a short code
-    response = client.post("/shorten", json={"long_url": "https://example.com"})
-    short_code = response.json()["short_code"]
+def test_redirect_url():
+    # First, shorten a URL to get a short_code
+    shorten_response = client.post("/shorten", json={"long_url": "http://example.com"})
+    short_code = shorten_response.json()["short_code"]
 
-    # Test the redirect
-    response = client.get(f"/{short_code}", follow_redirects=False)
+    # Now, test the redirect
+    response = client.get(f"/{short_code}")
     assert response.status_code == 307
-    assert response.headers["location"] == "https://example.com"
+    assert response.headers["location"] == "http://example.com"
 
-def test_stats():
-    # First, create a short code
-    response = client.post("/shorten", json={"long_url": "https://example.com"})
-    short_code = response.json()["short_code"]
+def test_stats_url():
+    # First, shorten a URL to get a short_code
+    shorten_response = client.post("/shorten", json={"long_url": "http://example.com"})
+    short_code = shorten_response.json()["short_code"]
 
-    # Test the stats
-    response = client.get(f"/stats/{short_code}")
-    assert response.status_code == 200
-    assert "clicks" in response.json()
+    # Now, test the stats
+    stats_response = client.get(f"/stats/{short_code}")
+    assert stats_response.status_code == 200
+    assert "clicks" in stats_response.json()
+
+def test_unknown_short_code_redirect():
+    response = client.get("/unknown_code")
+    assert response.status_code == 404
+
+def test_unknown_short_code_stats():
+    response = client.get("/stats/unknown_code")
+    assert response.status_code == 404

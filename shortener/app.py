@@ -4,12 +4,12 @@ from pydantic import BaseModel
 import random
 import string
 from datetime import datetime
+import time
 
 app = FastAPI()
 
-# In-memory storage
-url_storage = {}
-click_counts = {}
+storage = {}
+clicks_count = {}
 
 class ShortenRequest(BaseModel):
     long_url: str
@@ -20,30 +20,40 @@ class ShortenResponse(BaseModel):
 class StatsResponse(BaseModel):
     clicks: int
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+class HealthResponse(BaseModel):
+    status: str
+    timestamp: str
+    dependencies: dict  # Added dependencies field
 
 def generate_short_code(length=6):
-    characters = string.ascii_letters + string.digits
-    return ''.join(random.choice(characters) for _ in range(length))
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
 @app.post("/shorten", response_model=ShortenResponse)
-async def shorten_url(request: ShortenRequest):
+async def shorten(request: ShortenRequest):
     short_code = generate_short_code()
-    url_storage[short_code] = request.long_url
-    click_counts[short_code] = 0
-    return ShortenResponse(short_code=short_code)
+    retries = 3
+    for _ in range(retries):
+        try:
+            storage[short_code] = request.long_url
+            clicks_count[short_code] = 0
+            return ShortenResponse(short_code=short_code)
+        except Exception:
+            time.sleep(1)  # Wait before retrying
+    raise HTTPException(status_code=500, detail="Failed to store URL after multiple attempts.")
+
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    return HealthResponse(status="UP", timestamp=datetime.now().isoformat(), dependencies={})  # Added empty dependencies
 
 @app.get("/{short_code}")
-async def redirect_to_long_url(short_code: str):
-    long_url = url_storage.get(short_code)
-    if long_url is None:
-        raise HTTPException(status_code=404, detail="URL not found")
-    click_counts[short_code] += 1
-    return RedirectResponse(url=long_url, status_code=307)
+async def redirect(short_code: str):
+    if short_code not in storage:
+        raise HTTPException(status_code=404)
+    clicks_count[short_code] += 1
+    return RedirectResponse(url=storage[short_code], status_code=307)
 
 @app.get("/stats/{short_code}", response_model=StatsResponse)
-async def get_stats(short_code: str):
-    clicks = click_counts.get(short_code, 0)
-    return StatsResponse(clicks=clicks)
+async def stats(short_code: str):
+    if short_code not in clicks_count:
+        raise HTTPException(status_code=404)
+    return StatsResponse(clicks=clicks_count[short_code])
