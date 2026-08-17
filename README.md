@@ -120,25 +120,28 @@ It verifies the parts that matter most: concurrent fork-join execution, dynamic 
 
 ## Architecture at a glance
 
+```mermaid
+flowchart TD
+    R["requirement (free text)"] --> P["Planner<br/>classify + emit task DAG<br/>(greenfield / brownfield / ambiguous)"]
+    P --> C["Controller (control shell)<br/>walks the DAG; per node:<br/>entry gate → run → exit gate;<br/>retry / rollback / re-plan / escalate"]
+    C <-->|"append events / build_state() folds the log"| EL["Event log — the blackboard<br/>append-only; state is a fold over it"]
+    C --> DONE["run_finished"]
 ```
-requirement (free text)
-      │
-      ▼
-  ┌─────────┐   classifies intent, emits a task DAG
-  │ Planner │   (greenfield / brownfield / ambiguous)
-  └─────────┘
-      │
-      ▼
-  ┌────────────┐   walks the DAG; each node runs through
-  │ Controller │   entry gate → run → exit gate; retries,
-  │ (control   │   rolls back, re-plans, or escalates to a
-  │  shell)    │   human on failure
-  └────────────┘
-      │  reads/writes
-      ▼
-  ┌──────────────────────────┐
-  │ Event log (the blackboard)│  append-only; state is a fold over it
-  └──────────────────────────┘
+
+The **greenfield** task graph (nodes run when dependencies are met; `implement` and `test` run in parallel and synchronize at `verify`):
+
+```mermaid
+flowchart TD
+    requirement --> plan --> architect
+    architect --> implement
+    architect --> test
+    implement --> verify
+    test --> verify
+    verify --> document --> release
+    subgraph build["parallel_group: build"]
+        implement
+        test
+    end
 ```
 
 Full detail — component mapping, the governed node lifecycle, the three DAGs, the recovery model, the contract chain, and the key architecture decisions (as ADRs) — is in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
