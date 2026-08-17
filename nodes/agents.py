@@ -126,15 +126,22 @@ class ArchitectNode(Node):
         return {"design": design_text, "contract": contract}
 
     def _derive_contract(self, spec):
-        """Ask the LLM to emit the API contract as JSON from the spec.
-        Falls back to the reference contract if the model returns invalid JSON,
-        so a bad generation can't break the pipeline (defensive, defensible)."""
+        """Ask the LLM to emit the API contract as JSON from the spec, pinning the
+        EXACT response field names so implement and test cannot drift. Falls back
+        to the fully-specified reference contract if the derived one is malformed
+        or missing required fields (defensive + reliable)."""
         prompt = (
             "You are an API architect. From this spec, emit a JSON contract for a "
-            "URL shortener API. Return ONLY valid JSON (no prose, no fences) with "
-            'this shape: {"endpoints": [{"method","path","status"}], "storage": "..."}.'
-            "\nInclude POST /shorten (200), GET /{short_code} redirect (307), and "
-            "GET /stats/{short_code} (200).\n\nSpec:\n" + str(spec)
+            "URL shortener API. Return ONLY valid JSON (no prose, no fences). "
+            "You MUST use these EXACT field names so code and tests agree:\n"
+            '  - POST /shorten : request {"long_url": "string"} -> response '
+            '{"short_code": "string"}, status 200\n'
+            '  - GET /{short_code} : redirect (RedirectResponse), status 307, '
+            "404 if unknown\n"
+            '  - GET /stats/{short_code} : response {"clicks": "integer"}, status '
+            "200, 404 if unknown\n"
+            'Shape: {"endpoints":[{"method","path","request","response","status"}],'
+            '"storage":"in-memory dict"}\n\nSpec:\n' + str(spec)
         )
         try:
             raw = strip_code_fences(call_llm(prompt))
@@ -142,6 +149,10 @@ class ArchitectNode(Node):
             paths = {e.get("path") for e in derived.get("endpoints", [])}
             required = {"/shorten", "/{short_code}", "/stats/{short_code}"}
             if not required.issubset(paths):
+                return SHORTENER_CONTRACT
+            # Validate the exact response fields are present; else use reference.
+            fields = json.dumps(derived)
+            if "short_code" not in fields or "clicks" not in fields:
                 return SHORTENER_CONTRACT
             return derived
         except Exception:
@@ -170,8 +181,10 @@ class ImplementNode(Node):
         prompt = (
             "Implement a URL shortener as a single FastAPI file app.py.\n\n"
             f"You MUST match this contract exactly:\n{json.dumps(state['artifacts'].get('architect', {}).get('contract', SHORTENER_CONTRACT), indent=2)}\n\n"
-            "Use JSON request bodies. The redirect endpoint returns "
-            "RedirectResponse (status 307). Use an in-memory dict for storage. "
+            "Use JSON request bodies. POST /shorten returns {\"short_code\": ...}. "
+            "GET /stats/{short_code} returns {\"clicks\": ...}. The redirect endpoint "
+            "returns RedirectResponse (status 307). Use these EXACT field names. "
+            "Use an in-memory dict for storage. "
             "Return ONLY the code for app.py. No prose, no markdown fences."
         )
         return {"code": strip_code_fences(call_llm(prompt))}
@@ -200,6 +213,8 @@ class TestNode(Node):
             "Write pytest tests for a URL shortener using FastAPI TestClient.\n\n"
             f"Test against this contract exactly:\n{json.dumps(state['artifacts'].get('architect', {}).get('contract', SHORTENER_CONTRACT), indent=2)}\n\n"
             "Import the app from app (import app). Use JSON bodies. "
+            "POST /shorten returns {\"short_code\": ...}; GET /stats/{short_code} "
+            "returns {\"clicks\": ...}. Assert these EXACT field names. "
             "CRITICAL for the redirect test: create the client with "
             "TestClient(app, follow_redirects=False) and assert status_code == 307 "
             "and the 'location' header equals the long URL. "
