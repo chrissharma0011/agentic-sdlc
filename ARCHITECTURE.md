@@ -28,6 +28,21 @@ A defining property: nodes do not call each other. The Test node does not receiv
 
 ---
 
+### The blackboard control loop
+
+```mermaid
+flowchart TD
+    R["requirement (free text)"] --> P["Planner<br/>classify + emit DAG"]
+    P --> C["Controller<br/>(deterministic control shell)"]
+    C -->|"picks next ready node"| N["Knowledge source / node<br/>entry gate → run (LLM) → exit gate"]
+    N -->|"append artifact / event"| EL["Event log<br/>(the blackboard, append-only)"]
+    EL -->|"build_state() folds the log"| C
+    C -->|"gate fails: retry / rollback / re-plan / escalate"| C
+    C --> DONE["run_finished"]
+```
+
+---
+
 ## 2. Approaches considered
 
 There are three standard ways to build agent orchestration, and this project deliberately chose the middle one.
@@ -100,6 +115,101 @@ Deriving state from an immutable log is the event-sourcing pattern; getting audi
 - **Ambiguous:** `requirement → clarify → approval → …` then routed to build-or-patch depending on whether an app already exists
 
 The graphs are genuinely different structures, not the same pipeline with flags — brownfield adds codebase reasoning (`context_retrieval`) and a human approval gate before any change; ambiguous inserts a clarify step that resolves the vague spec before planning.
+
+### Greenfield DAG — build from scratch
+
+```mermaid
+flowchart TD
+    requirement --> plan --> architect
+    architect --> implement
+    architect --> test
+    implement --> verify
+    test --> verify
+    verify --> document --> release
+    subgraph build["parallel_group: build"]
+        implement
+        test
+    end
+```
+
+### Brownfield DAG — change existing code
+
+The brownfield graph adds codebase reasoning (`context_retrieval`) and a human `approval` gate before any code is modified.
+
+```mermaid
+flowchart TD
+    requirement --> context_retrieval --> clarify --> architect --> approval
+    approval --> implement
+    approval --> test
+    implement --> verify
+    test --> verify
+    verify --> document --> release
+    subgraph build["parallel_group: build"]
+        implement
+        test
+    end
+    clarify:::human
+    approval:::human
+    classDef human fill:#ffe8cc,stroke:#e8590c;
+```
+
+### Ambiguous DAG — resolve first, then build or patch
+
+A vague request is not guessed. The system clarifies with the human, then routes to build-new or patch-existing depending on whether an app already exists.
+
+```mermaid
+flowchart TD
+    requirement --> clarify --> approval --> plan --> architect
+    architect --> implement
+    architect --> test
+    implement --> verify
+    test --> verify
+    verify --> document --> release
+    subgraph build["parallel_group: build"]
+        implement
+        test
+    end
+    clarify:::human
+    approval:::human
+    classDef human fill:#ffe8cc,stroke:#e8590c;
+```
+
+### Dynamic re-planning — the graph mutates at runtime
+
+When `verify` fails after its retry budget, the controller injects a `repair` task and re-routes `verify` to depend on it. This is graph mutation in response to an upstream failure — the DAG's shape changes mid-run.
+
+```mermaid
+flowchart TD
+    subgraph before["Before failure"]
+        i1[implement] --> v1[verify]
+        t1[test] --> v1
+    end
+    subgraph after["After verify fails (re-plan)"]
+        i2[implement] --> rep[repair<br/>*injected*]
+        arch[architect] --> rep
+        rep --> v2[verify]
+        t2[test] --> v2
+    end
+    before -->|"retries exhausted → replan_injected"| after
+    rep:::injected
+    classDef injected fill:#d3f9d8,stroke:#2f9e44;
+```
+
+### Governed recovery sequence
+
+```mermaid
+flowchart LR
+    run[node runs] --> gate{exit gate}
+    gate -->|pass| next[next node]
+    gate -->|fail| rb[rollback event]
+    rb --> retry{retries left?}
+    retry -->|yes| run
+    retry -->|no| replan{can re-plan?}
+    replan -->|yes| inject[inject repair task] --> run
+    replan -->|no| esc[escalate to human]
+    esc -->|approve| run
+    esc -->|stop| halt[safe stop]
+```
 
 **Dynamic re-planning (graph mutation at runtime).** When the Verify node fails after its retry budget, the controller does not merely stop. It **mutates the graph**: it injects a new `repair` task, re-routes `verify` to depend on it, resets the affected nodes to pending, and loops back. The repair node regenerates the implementation using the recorded failure reason, and verification runs again. This is the "dynamically re-plan when upstream outputs change" capability — implemented as graph mutation, bounded by a replan budget so it cannot loop forever.
 
