@@ -223,7 +223,9 @@ class VerifyNode(Node):
         return True, ""
 
     def run(self, state):
-        code = state["artifacts"].get("implement", {}).get("code", "")
+        # Prefer repaired code from a dynamic re-plan, else the original implement.
+        repair_art = state["artifacts"].get("repair", {})
+        code = repair_art.get("code") or state["artifacts"].get("implement", {}).get("code", "")
         tests = state["artifacts"].get("test", {}).get("tests", "")
         passed, output = _run_pytest(code, tests)
         repairs = 0
