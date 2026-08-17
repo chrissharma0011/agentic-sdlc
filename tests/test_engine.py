@@ -1,6 +1,7 @@
 """Synthetic test of the new controller: parallel exec, replan, approval-resume."""
-import sys, builtins
-sys.path.insert(0, '/tmp/asdlc/agentic-sdlc-main')
+import sys, builtins, os
+# Add the project root to the path so this runs from anywhere.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.graph import TaskGraph, Task, DONE
 from core.node import Node, GateError
