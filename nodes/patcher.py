@@ -26,6 +26,10 @@ def patch_file(existing_code, change_request, impact="", feedback=""):
         f"--- IMPACT ANALYSIS ---\n{impact}\n"
         f"{feedback_line}\n"
         f"--- CURRENT FILE (app.py) ---\n{existing_code}\n\n"
+        "If the file is a FastAPI app, any catch-all route like "
+        "@app.get('/{short_code}') MUST remain the LAST route so it does not "
+        "shadow more specific routes (e.g. /health). Place new specific routes "
+        "ABOVE the catch-all.\n"
         "Return the COMPLETE updated file with only the necessary change applied. "
         "No prose, no markdown fences."
     )
